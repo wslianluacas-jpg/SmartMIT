@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SmartMIT - Controle Motor</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: Arial, sans-serif;
+            background: linear-gradient(135deg, #1e3c72, #2a5298);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 20px;
+            padding: 25px;
+            max-width: 480px;
+            width: 100%;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+        }
+        h1 { text-align: center; color: #1e3c72; font-size: 24px; margin-bottom: 5px; }
+        .subtitle { text-align: center; color: #666; font-size: 12px; margin-bottom: 20px; }
+        .box { background: #f0f4f8; border-radius: 12px; padding: 15px; margin-bottom: 15px; }
+        .status-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+        .led { width: 15px; height: 15px; border-radius: 50%; display: inline-block; }
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+        .led-green { background: #4caf50; box-shadow: 0 0 15px #4caf50; animation: pulse 2s infinite; }
+        .led-red { background: #f44336; box-shadow: 0 0 15px #f44336; }
+        .btn {
+            width: 100%; padding: 12px; border: none; border-radius: 10px;
+            font-size: 16px; font-weight: bold; cursor: pointer; transition: 0.3s;
+            color: white; margin-top: 8px;
+        }
+        .btn:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(0,0,0,0.3); }
+        .btn:active { transform: translateY(0); }
+        .btn-connect { background: #4caf50; }
+        .btn-disconnect { background: #f44336; }
+        .btn-ligar { background: #4caf50; }
+        .btn-desligar { background: #f44336; }
+        .btn-emergencia { background: #ff9800; }
+        .btn-velocidade { background: #2196f3; }
+        .btn-limpar { background: #607d8b; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 15px 0; }
+        .full { grid-column: 1 / -1; }
+        input[type="range"] { width: 100%; margin: 10px 0; }
+        .rpm-valor { text-align: center; font-size: 28px; font-weight: bold; color: #1e3c72; margin: 10px 0; }
+        .dados { background: #1e3c72; color: white; border-radius: 12px; padding: 15px; text-align: center; margin: 15px 0; }
+        .dados-num { font-size: 36px; font-weight: bold; }
+        .dados-label { font-size: 12px; opacity: 0.8; }
+        .log-box { max-height: 200px; overflow-y: auto; background: white; border-radius: 8px; padding: 10px; }
+        .log-item { display: flex; gap: 8px; padding: 5px 0; border-bottom: 1px solid #eee; font-size: 11px; font-family: monospace; }
+        .log-hora { color: #666; min-width: 75px; }
+        .badge { padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: bold; color: white; }
+        .badge-ok { background: #4caf50; } .badge-cmd { background: #2196f3; }
+        .badge-data { background: #ff9800; } .badge-err { background: #f44336; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>SmartMIT</h1>
+        <p class="subtitle">ESP32 Gateway | CLP:2023 | IHM:2024</p>
+        
+        <div class="box">
+            <div class="status-row">
+                <span id="led" class="led led-red"></span>
+                <strong id="statusTexto">Desconectado</strong>
+            </div>
+            <button id="btnConn" class="btn btn-connect" onclick="toggle()">Conectar ao ESP32</button>
+        </div>
+        
+        <div class="grid">
+            <button class="btn btn-ligar" onclick="cmd(100,0)">LIGAR</button>
+            <button class="btn btn-desligar" onclick="cmd(200,0)">DESLIGAR</button>
+            <button class="btn btn-emergencia full" onclick="cmd(400,0)">EMERGENCIA</button>
+        </div>
+        
+        <div class="box">
+            <strong>Velocidade</strong>
+            <input type="range" id="rpm" min="100" max="1800" value="1200" step="50" 
+                   oninput="document.getElementById('rpmShow').textContent=this.value">
+            <div class="rpm-valor"><span id="rpmShow">1200</span> RPM</div>
+            <button class="btn btn-velocidade" onclick="cmd(300,parseInt(document.getElementById('rpm').value))">
+                Aplicar Velocidade
+            </button>
+        </div>
+        
+        <div class="dados">
+            <div class="dados-label">DADOS DO CLP</div>
+            <div class="dados-num" id="dadosClp">---</div>
+        </div>
+        
+        <div class="box">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                <strong>Historico</strong>
+                <button class="btn btn-limpar" style="width:auto; padding:6px 12px; font-size:12px; margin:0;" 
+                        onclick="limparLog()">Limpar</button>
+            </div>
+            <div class="log-box" id="log"></div>
+        </div>
+    </div>
+
+    <script>
+        let ws = null, conectado = false, log = [];
+        
+        function addLog(tipo, msg) {
+            const h = new Date().toLocaleTimeString('pt-BR', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+            log.unshift({h, tipo, msg});
+            if(log.length > 100) log.pop();
+            renderLog();
+        }
+        
+        function renderLog() {
+            const el = document.getElementById('log');
+            if(log.length === 0) {
+                el.innerHTML = '<div style="text-align:center;color:#999;padding:20px;">Nenhum evento</div>';
+                return;
+            }
+            el.innerHTML = log.map(l => {
+                let b = 'badge-ok';
+                if(l.tipo==='CMD') b='badge-cmd';
+                else if(l.tipo==='DADO') b='badge-data';
+                else if(l.tipo==='ERRO') b='badge-err';
+                return `<div class="log-item">
+                    <span class="log-hora">${l.h}</span>
+                    <span class="badge ${b}">${l.tipo}</span>
+                    <span>${l.msg}</span>
+                </div>`;
+            }).join('');
+        }
+        
+        function limparLog() { log = []; renderLog(); addLog('INFO', 'Log limpo'); }
+        
+        function toggle() { conectado ? desconectar() : conectar(); }
+        
+        function conectar() {
+            addLog('INFO', 'Conectando ws://192.168.0.123:2024...');
+            ws = new WebSocket('ws://192.168.0.123:2024');
+            ws.binaryType = 'arraybuffer';
+            
+            ws.onopen = () => {
+                conectado = true; updateUI();
+                addLog('OK', 'Conectado ao ESP32!');
+            };
+            
+            ws.onmessage = (e) => {
+                if(e.data instanceof ArrayBuffer) {
+                    const v = new Uint8Array(e.data);
+                    const val = (v[0]<<8)|v[1];
+                    document.getElementById('dadosClp').textContent = val;
+                    addLog('DADO', 'CLP: ' + val);
+                } else {
+                    try {
+                        const d = JSON.parse(e.data);
+                        if(d.msg) addLog('INFO', d.msg);
+                        if(d.status) addLog('OK', d.status);
+                    } catch(x) {
+                        addLog('INFO', e.data);
+                    }
+                }
+            };
+            
+            ws.onerror = () => { addLog('ERRO', 'Erro WebSocket!'); };
+            
+            ws.onclose = () => {
+                conectado = false; updateUI();
+                addLog('INFO', 'Desconectado');
+            };
+        }
+        
+        function desconectar() {
+            if(ws) { ws.close(); ws = null; }
+            conectado = false; updateUI();
+        }
+        
+        function cmd(c, v) {
+            if(!conectado || !ws) {
+                addLog('ERRO', 'Nao conectado!');
+                alert('Conecte primeiro!');
+                return;
+            }
+            const buf = new ArrayBuffer(4);
+            const dv = new DataView(buf);
+            dv.setInt16(0, c, false);
+            dv.setInt16(2, v, false);
+            ws.send(buf);
+            
+            const nomes = {100:'LIGAR', 200:'DESLIGAR', 300:'VELOCIDADE', 400:'EMERGENCIA'};
+            const nome = nomes[c] || ('CMD_' + c);
+            const extra = v > 0 ? (' (' + v + ' RPM)') : '';
+            addLog('CMD', nome + extra);
+        }
+        
+        function updateUI() {
+            document.getElementById('led').className = conectado ? 'led led-green' : 'led led-red';
+            document.getElementById('statusTexto').textContent = conectado ? 'Conectado' : 'Desconectado';
+            const btn = document.getElementById('btnConn');
+            btn.textContent = conectado ? 'Desconectar' : 'Conectar ao ESP32';
+            btn.className = conectado ? 'btn btn-disconnect' : 'btn btn-connect';
+            if(!conectado) document.getElementById('dadosClp').textContent = '---';
+        }
+        
+        addLog('INFO', 'IHM SmartMIT iniciada');
+        addLog('INFO', 'Porta WebSocket: 2024');
+    </script>
+</body>
+</html>
